@@ -100,7 +100,7 @@ async function claim(wallet, allocation) {
         allocation.deadline,
         allocation.sign,
         INSTANT_CLAIM,
-        '0x9e66504A892fa84705C24A4BD41E67b6be581c65',
+        '0xa5b61AF6BC5a24991cf54e835Bdd2C0c4f41D816',
       );
 
       await transaction.wait(1, 60_000);
