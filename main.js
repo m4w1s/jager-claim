@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { ethers } from 'ethers';
 import { gotScraping } from 'got-scraping';
+import { Keypair } from '@solana/web3.js';
+import bs58 from 'bs58';
+import nacl from "tweetnacl";
+import naclUtil from "tweetnacl-util";
 
 const PROVIDER = new ethers.JsonRpcProvider('https://bsc-rpc.publicnode.com');
 
@@ -18,7 +22,7 @@ const wallets = readWallets();
 (async () => {
   for (const wallet of wallets) {
     try {
-      await processWallet(wallet.wallet, wallet.withdrawAddress, wallet.proxy);
+      await processWallet(wallet.wallet, wallet.keypair, wallet.withdrawAddress, wallet.proxy);
 
       await sleep(DELAY_SECONDS.MIN * 1000, DELAY_SECONDS.MAX * 1000);
     } catch (e) {
@@ -32,8 +36,19 @@ const wallets = readWallets();
   console.log('All wallets processed!');
 })();
 
-async function processWallet(wallet, withdrawAddress, proxy) {
-  const allocation = await getAllocation(wallet, proxy);
+async function processWallet(wallet, keypair, withdrawAddress, proxy) {
+  const signature = await wallet.signMessage(wallet.address)
+  let solanaAddress
+  let solanaSignature
+
+  if (keypair) {
+    solanaAddress = keypair.publicKey.toBase58()
+    solanaSignature = signSolMessage(keypair, solanaAddress)
+    await bindSolana(proxy, wallet.address, signature, solanaAddress, solanaSignature)
+    console.log(`[${wallet.address} Solana address ${solanaAddress} successfully bound`)
+  }
+
+  const allocation = await getAllocation(proxy, wallet.address, signature, solanaAddress, solanaSignature);
 
   console.log(`[${wallet.address}] Allocation of ${allocation.amount} JAGER loaded!`);
 
@@ -126,18 +141,21 @@ async function claim(wallet, allocation) {
 }
 
 /**
- * @param {ethers.Wallet} wallet
  * @param {string | undefined} proxy
+ * @param {string | undefined} address
+ * @param {string | undefined} signature
+ * @param {string | undefined} solanaAddress
+ * @param {string | undefined} solanaSignature
  * @returns {Promise<{ address: string; amount: string; deadline: number; sign: string }>}
  */
-async function getAllocation(wallet, proxy) {
+async function getAllocation(proxy, address, signature, solanaAddress = '', solanaSignature = '') {
   const response = await gotScraping('https://api.jager.meme/api/airdrop/claimAirdrop', {
     method: 'POST',
     json: {
-      address: wallet.address,
-      signStr: await wallet.signMessage(wallet.address),
-      solAddress: '',
-      solSignStr: '',
+      address,
+      signStr: signature,
+      solAddress: solanaAddress,
+      solSignStr: solanaSignature
     },
     proxyUrl: proxy,
     responseType: 'json',
@@ -150,12 +168,38 @@ async function getAllocation(wallet, proxy) {
   throw new Error(`No allocation or malformed response (status: ${response.statusCode}): ${response.body?.message}`);
 }
 
+async function bindSolana(proxy, address, signature, solanaAddress, solanaSignature) {
+  const response = await gotScraping('https://api.jager.meme/api/airdrop/bindSolana', {
+    method: 'POST',
+    json: {
+      address,
+      signStr: signature,
+      solAddress: solanaAddress,
+      solSignStr: solanaSignature
+    },
+    proxyUrl: proxy,
+    responseType: 'json',
+  });
+
+  if (response.ok && response.body?.code === 200 && response.body.data) {
+    return response.body.data;
+  }
+
+  throw new Error(`Failed bind solana address (status: ${response.statusCode}): ${response.body?.message}`);
+}
+
+function signSolMessage(keypair, message) {
+  const messageBytes = naclUtil.decodeUTF8(message);
+  const signature = nacl.sign.detached(messageBytes, keypair.secretKey);
+  return Buffer.from(signature).toString('base64');
+}
+
 function readWallets() {
   const wallets = readFileSync(new URL('./data/wallets.txt', import.meta.url), 'utf8').split(/\r?\n/).filter(isNonEmptyLine);
   const proxies = readFileSync(new URL('./data/proxies.txt', import.meta.url), 'utf8').split(/\r?\n/).filter(isNonEmptyLine);
 
   return wallets.map((wallet, index) => {
-    const [privateKey, withdrawAddress] = wallet.trim().split(':');
+    const [privateKey, withdrawAddress, solanaPrivateKey] = wallet.trim().split(':');
     let proxy = proxies[index]?.trim() || undefined;
 
     if (proxy) {
@@ -174,6 +218,7 @@ function readWallets() {
 
     return {
       wallet: new ethers.Wallet(privateKey, PROVIDER),
+      keypair: solanaPrivateKey ? Keypair.fromSecretKey(bs58.decode(solanaPrivateKey)) : undefined,
       withdrawAddress: ethers.isAddress(withdrawAddress) ? withdrawAddress : undefined,
       proxy,
     };
