@@ -37,16 +37,20 @@ const wallets = readWallets();
 })();
 
 async function processWallet(wallet, keypair, withdrawAddress, proxy) {
-  const allocation = await getAllocation(wallet, proxy);
-  console.log(`[${wallet.address}] Allocation of ${allocation.amount} JAGER loaded!`);
+  const signature = await wallet.signMessage(wallet.address)
+  let solanaAddress
+  let solanaSignature
 
   if (keypair) {
-    const signature = await wallet.signMessage(wallet.address)
-    const solanaAddress = keypair.publicKey.toBase58()
-    const solanaSignature = signSolMessage(keypair, solanaAddress)
+    solanaAddress = keypair.publicKey.toBase58()
+    solanaSignature = signSolMessage(keypair, solanaAddress)
     await bindSolana(proxy, wallet.address, signature, solanaAddress, solanaSignature)
     console.log(`[${wallet.address} Solana address ${solanaAddress} successfully bound`)
   }
+
+  const allocation = await getAllocation(proxy, wallet.address, signature, solanaAddress, solanaSignature);
+
+  console.log(`[${wallet.address}] Allocation of ${allocation.amount} JAGER loaded!`);
 
   await claim(wallet, allocation);
 
@@ -137,18 +141,21 @@ async function claim(wallet, allocation) {
 }
 
 /**
- * @param {ethers.Wallet} wallet
  * @param {string | undefined} proxy
+ * @param {string | undefined} address
+ * @param {string | undefined} signature
+ * @param {string | undefined} solanaAddress
+ * @param {string | undefined} solanaSignature
  * @returns {Promise<{ address: string; amount: string; deadline: number; sign: string }>}
  */
-async function getAllocation(wallet, proxy) {
+async function getAllocation(proxy, address, signature, solanaAddress = '', solanaSignature = '') {
   const response = await gotScraping('https://api.jager.meme/api/airdrop/claimAirdrop', {
     method: 'POST',
     json: {
-      address: wallet.address,
-      signStr: await wallet.signMessage(wallet.address),
-      solAddress: '',
-      solSignStr: '',
+      address,
+      signStr: signature,
+      solAddress: solanaAddress,
+      solSignStr: solanaSignature
     },
     proxyUrl: proxy,
     responseType: 'json',
